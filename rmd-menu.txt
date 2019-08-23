@@ -34,6 +34,7 @@ When you click the **Knit** button a document will be generated that includes bo
 
 ```{r cars}
 summary(cars)
+DT::datatable(cars, rownames=FALSE, options=list(dom='pt',pageLength=15))
 ```
 
 
