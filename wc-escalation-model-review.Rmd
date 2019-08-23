@@ -1,0 +1,409 @@
+---
+title: "WC Escalation Model Review"
+author: "Chengjun Hou, Advanced Analytics"
+date: "February 28, 2019"
+output: 
+  html_document: 
+    toc: true
+    toc_float: 
+      collapsed: false
+      smooth_scroll: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+library(data.table)
+library(dplyr)
+library(ggplot2)
+library(gridExtra)
+setwd('~/wd/wct2')
+source('src/pmut_auc.R')
+source('src/fun_mod_ptile.R')
+meta <- readRDS("rds/meta")
+dt <- fread('data/wct2-dt.csv')
+```
+
+
+
+------
+
+## Overview
+
+Current 60-day models include:
+
+- **ESCALATE**: the model predicts whether current DLI will escalate more than 50% when closing, producing a propensity between 0 and 1.
+- **GOABOVE**: the model predicts whether closing DLI will go above $100K, producing a propensity between 0 and 1.
+- **LOSS**: the model gives final DLI prediction, producing a numeric dollar value.
+
+With these 3 models, 4 type of alerts are given:
+
+- <span style="color:orange">A = Escalation Alert to Claim Adjuster:</span> given current DLI is under $100K, it predicts how likely the
+closing DLI will escalate **more** than 50% but stay **below** $100K. So we have $Pr(A) = Pr(ES) \times (1-Pr(GO))$.
+
+- <span style="color:blue">B = Escalation Alert to SCMU:</span> given current DLI is already above $100K, it predicts how likely the closing
+DLI will escalate **more** than $100K. So we have *B=1* when $Val(LOSS) - DLI > 100,000$.
+
+- <span style="color:green">C = Severity Alert to SCMU:</span> given current DLI is under $100K, it predicts how likely the closing
+DLI will escalate **less** than 50% and go **above** $100K. So we have $Pr(C) = (1-Pr(ES)) \times Pr(GO)$.
+
+- <span style="color:#D4AC0D">D = Escalation/Severity Alert to SCMU:</span> given current DLI is under $100K, it predicts how likely the 
+closing DLI will escalate **more** than 50% and go **above** $100K. So we have $Pr(D) = Pr(ES) \times Pr(GO)$.
+
+In order to measure the model performance, we collect 42944 WC claims closing in 2015, 2016, 2017, 2018 whoes model scores we are able to
+track. Note that model scores are collected at weekly transaction level. So depending on when the claim is closed, we have number of 
+records for weekly-score ranging from `r min(meta$N)` to `r max(meta$N)`. Below is a sample of claim summary statistics:
+
+```{r meta}
+temp = meta[c(2:5,2003:2006,42940,42943),1:7,with=FALSE]
+names(temp)[2:3] = c('ST_WEEK','END_WEEK')
+DT::datatable(temp, rownames=FALSE, options=list(dom='t'))
+```
+
+```{r overview1, fig.height=5,fig.width=10,fig.align='center'}
+ggplot(meta, aes(as.factor(YR_ENTERED))) + geom_bar(aes(fill=as.factor(YR_CLOSED))) + theme(legend.position="top") + ylab('claim count')
+```
+
+```{r overview2, fig.height=4,fig.width=10,fig.align='center'}
+h1 <- ggplot(meta, aes(x=N)) + geom_histogram(binwidth=1) + xlab("N: total number of score records")
+h2 <- ggplot(meta, aes(x=CLOSE_BIN)) + geom_bar() + xlab("DIV: closed DLI divides")
+grid.arrange(h1, h2, ncol=2)
+```
+
+
+
+------
+
+## GOABOVE Model
+
+We will now evaluate the GOABOVE model at week-5 (day-30), week-7 (day-45), and week-9 (day-60).
+For each week option, we filter on claim with current DLI lower than $100K, 
+rank scores/propensities by GOABOVE model at that week from high to low, 
+then study whether closing DLI goes above $100K for each top percentile.
+
+
+### Week-5
+
+```{r}
+temp = dt[ENTER_SCORE_DIFF_WEEK==5 & DLI_BIN!='>100K',
+          .(DIRECT_LOSS_INCURRED_AMT,DLI_BIN,ABOVE_PRO,DIRECT_LOSS_INCURRED)][order(-ABOVE_PRO)]
+names(temp)[c(1,4)] = c("DLI","CLOSE_DLI")
+temp[,ABOVE_100K:=(CLOSE_DLI>100000)]
+targetstring="ABOVE_100K"
+rankstring="ABOVE_PRO"
+pseq=c((0:10)*0.01,1)
+zxc = fun_mod_ptile(temp, targetstring, rankstring, pseq, cumulative=TRUE)
+zxc[['ABOVE_100K_RATE']] = round(zxc$ABOVE_100K.TRUE/(zxc$ABOVE_100K.TRUE+zxc$ABOVE_100K.FALSE), digits=4)
+zxc[['ABOVE_100K_COVER']] = round(zxc$ABOVE_100K.TRUE/sum(temp$ABOVE_100K), digits=4)
+
+DT::datatable(zxc, rownames=FALSE, options=list(dom='t',pageLength=15))
+xcv = pmut_auc(as.numeric(temp$ABOVE_100K), temp$ABOVE_PRO)
+```
+
+As the target event is an extremely rare event with an overall rate of `r zxc$ABOVE_100K_RATE[11]`, we use AUC to measure model performance.
+AUC value of **`r xcv[[1]]`** is generated with `ABOVE_100K` as 1.
+
+```{r, fig.height=4,fig.width=10,fig.align='center'}
+p1 <- xcv[[2]]
+p2 <- ggplot(zxc, aes(LAB,ABOVE_100K_RATE)) + geom_bar(stat='identity') + geom_hline(yintercept=mean(temp$ABOVE_100K),color='red') + 
+  theme(axis.text.x=element_text(angle = 90,hjust = 1), plot.title=element_text(hjust = 0.5)) + labs(title=' ')
+grid.arrange(p1, p2, ncol=2)
+```
+
+
+### Week-7
+
+```{r}
+temp = dt[ENTER_SCORE_DIFF_WEEK==7 & DLI_BIN!='>100K',
+          .(DIRECT_LOSS_INCURRED_AMT,DLI_BIN,ABOVE_PRO,DIRECT_LOSS_INCURRED)][order(-ABOVE_PRO)]
+names(temp)[c(1,4)] = c("DLI","CLOSE_DLI")
+temp[,ABOVE_100K:=(CLOSE_DLI>100000)]
+targetstring="ABOVE_100K"
+rankstring="ABOVE_PRO"
+pseq=c((0:10)*0.01,1)
+zxc = fun_mod_ptile(temp, targetstring, rankstring, pseq, cumulative=TRUE)
+zxc[['ABOVE_100K_RATE']] = round(zxc$ABOVE_100K.TRUE/(zxc$ABOVE_100K.TRUE+zxc$ABOVE_100K.FALSE), digits=4)
+zxc[['ABOVE_100K_COVER']] = round(zxc$ABOVE_100K.TRUE/sum(temp$ABOVE_100K), digits=4)
+
+#DT::datatable(zxc, rownames=FALSE, options=list(dom='t',pageLength=15))
+xcv = pmut_auc(as.numeric(temp$ABOVE_100K), temp$ABOVE_PRO)
+```
+
+As the target event is an extremely rare event with an overall rate of `r zxc$ABOVE_100K_RATE[11]`, we use AUC to measure model performance.
+AUC value of **`r xcv[[1]]`** is generated with `ABOVE_100K` as 1.
+
+```{r, fig.height=4,fig.width=10,fig.align='center'}
+p1 <- xcv[[2]]
+p2 <- ggplot(zxc, aes(LAB,ABOVE_100K_RATE)) + geom_bar(stat='identity') + geom_hline(yintercept=mean(temp$ABOVE_100K),color='red') + 
+  theme(axis.text.x=element_text(angle = 90,hjust = 1), plot.title=element_text(hjust = 0.5)) + labs(title=' ')
+grid.arrange(p1, p2, ncol=2)
+```
+
+
+### Week-9
+
+```{r}
+temp = dt[ENTER_SCORE_DIFF_WEEK==9 & DLI_BIN!='>100K',
+          .(DIRECT_LOSS_INCURRED_AMT,DLI_BIN,ABOVE_PRO,DIRECT_LOSS_INCURRED)][order(-ABOVE_PRO)]
+names(temp)[c(1,4)] = c("DLI","CLOSE_DLI")
+temp[,ABOVE_100K:=(CLOSE_DLI>100000)]
+targetstring="ABOVE_100K"
+rankstring="ABOVE_PRO"
+pseq=c((0:10)*0.01,1)
+zxc = fun_mod_ptile(temp, targetstring, rankstring, pseq, cumulative=TRUE)
+zxc[['ABOVE_100K_RATE']] = round(zxc$ABOVE_100K.TRUE/(zxc$ABOVE_100K.TRUE+zxc$ABOVE_100K.FALSE), digits=4)
+zxc[['ABOVE_100K_COVER']] = round(zxc$ABOVE_100K.TRUE/sum(temp$ABOVE_100K), digits=4)
+
+#DT::datatable(zxc, rownames=FALSE, options=list(dom='t',pageLength=15))
+xcv = pmut_auc(as.numeric(temp$ABOVE_100K), temp$ABOVE_PRO)
+```
+
+As the target event is an extremely rare event with an overall rate of `r zxc$ABOVE_100K_RATE[11]`, we use AUC to measure model performance.
+AUC value of **`r xcv[[1]]`** is generated with `ABOVE_100K` as 1.
+
+```{r, fig.height=4,fig.width=10,fig.align='center'}
+p1 <- xcv[[2]]
+p2 <- ggplot(zxc, aes(LAB,ABOVE_100K_RATE)) + geom_bar(stat='identity') + geom_hline(yintercept=mean(temp$ABOVE_100K),color='red') + 
+  theme(axis.text.x=element_text(angle = 90,hjust = 1), plot.title=element_text(hjust = 0.5)) + labs(title=' ')
+grid.arrange(p1, p2, ncol=2)
+```
+
+
+
+------
+
+## ESCALATE Model
+
+We will now evaluate the ESCALATE model at week-5 (day-30), week-7 (day-45), and week-9 (day-60).
+For each week option, we filter on claim with current DLI lower than $25K, 
+rank scores/propensities by ESCALATE model at that week from high to low, 
+then study how closing DLI divides for each top percentile.
+
+
+### Week-5
+
+```{r}
+temp = dt[ENTER_SCORE_DIFF_WEEK==5 & DLI_BIN=='<25K',
+          .(DIRECT_LOSS_INCURRED_AMT,DLI_BIN,ESCALATE_PRO,DIRECT_LOSS_INCURRED)][order(-ESCALATE_PRO)]
+names(temp)[c(1,4)] = c("DLI","CLOSE_DLI")
+temp[,DIV:='IN_25K_100K']
+temp[CLOSE_DLI<25000,DIV:='BELOW_25K']
+temp[CLOSE_DLI>100000,DIV:='ABOVE_100K']
+temp[,DIV:=factor(DIV, levels=c('BELOW_25K','IN_25K_100K','ABOVE_100K'))]
+targetstring="DIV"
+rankstring="ESCALATE_PRO"
+pseq=c((0:10)*0.01,1)
+zxc = fun_mod_ptile(temp, targetstring, rankstring, pseq, cumulative=TRUE)
+zxc[['ABOVE_25K_RATE']] = round((zxc$DIV.IN_25K_100K+zxc$DIV.ABOVE_100K)/
+                                (zxc$DIV.BELOW_25K+zxc$DIV.IN_25K_100K+zxc$DIV.ABOVE_100K), digits=4)
+zxc[['ABOVE_25K_COVER']] = round((zxc$DIV.IN_25K_100K+zxc$DIV.ABOVE_100K)/
+                                 (sum(temp$DIV=='IN_25K_100K')+sum(temp$DIV=='ABOVE_100K')), digits=4)
+
+DT::datatable(zxc, rownames=FALSE, options=list(dom='t',pageLength=15))
+xcv = pmut_auc(as.numeric(temp$DIV!='BELOW_25K'), temp$ESCALATE_PRO)
+```
+
+As the target event is an extremely rare event with an overall rate of `r zxc$ABOVE_25K_RATE[11]`, we use AUC to measure model performance.
+AUC value of **`r xcv[[1]]`** is generated with `IN_25K_100K` and `ABOVE_100K` as 1.
+
+```{r, fig.height=4,fig.width=10,fig.align='center'}
+p1 <- xcv[[2]]
+p2 <- ggplot(reshape2::melt(zxc[,1:4,with=F], id.vars="LAB"), aes(LAB,value,fill=variable)) + 
+  geom_bar(stat='identity',position='fill') + scale_y_continuous(labels=scales::percent) +
+  theme(legend.position="top", axis.text.x=element_text(angle = 90,hjust = 1))
+grid.arrange(p1, p2, ncol=2)
+```
+
+
+### Week-7
+
+```{r}
+temp = dt[ENTER_SCORE_DIFF_WEEK==7 & DLI_BIN=='<25K',
+          .(DIRECT_LOSS_INCURRED_AMT,DLI_BIN,ESCALATE_PRO,DIRECT_LOSS_INCURRED)][order(-ESCALATE_PRO)]
+names(temp)[c(1,4)] = c("DLI","CLOSE_DLI")
+temp[,DIV:='IN_25K_100K']
+temp[CLOSE_DLI<25000,DIV:='BELOW_25K']
+temp[CLOSE_DLI>100000,DIV:='ABOVE_100K']
+temp[,DIV:=factor(DIV, levels=c('BELOW_25K','IN_25K_100K','ABOVE_100K'))]
+targetstring="DIV"
+rankstring="ESCALATE_PRO"
+pseq=c((0:10)*0.01,1)
+zxc = fun_mod_ptile(temp, targetstring, rankstring, pseq, cumulative=TRUE)
+zxc[['ABOVE_25K_RATE']] = round((zxc$DIV.IN_25K_100K+zxc$DIV.ABOVE_100K)/
+                                (zxc$DIV.BELOW_25K+zxc$DIV.IN_25K_100K+zxc$DIV.ABOVE_100K), digits=4)
+zxc[['ABOVE_25K_COVER']] = round((zxc$DIV.IN_25K_100K+zxc$DIV.ABOVE_100K)/
+                                 (sum(temp$DIV=='IN_25K_100K')+sum(temp$DIV=='ABOVE_100K')), digits=4)
+
+#DT::datatable(zxc, rownames=FALSE, options=list(dom='t',pageLength=15))
+xcv = pmut_auc(as.numeric(temp$DIV!='BELOW_25K'), temp$ESCALATE_PRO)
+```
+
+As the target event is an extremely rare event with an overall rate of `r zxc$ABOVE_25K_RATE[11]`, we use AUC to measure model performance.
+AUC value of **`r xcv[[1]]`** is generated with `IN_25K_100K` and `ABOVE_100K` as 1.
+
+```{r, fig.height=4,fig.width=10,fig.align='center'}
+p1 <- xcv[[2]]
+p2 <- ggplot(reshape2::melt(zxc[,1:4,with=F], id.vars="LAB"), aes(LAB,value,fill=variable)) + 
+  geom_bar(stat='identity',position='fill') + scale_y_continuous(labels=scales::percent) +
+  theme(legend.position="top", axis.text.x=element_text(angle = 90,hjust = 1))
+grid.arrange(p1, p2, ncol=2)
+```
+
+
+### Week-9
+
+```{r}
+temp = dt[ENTER_SCORE_DIFF_WEEK==9 & DLI_BIN=='<25K',
+          .(DIRECT_LOSS_INCURRED_AMT,DLI_BIN,ESCALATE_PRO,DIRECT_LOSS_INCURRED)][order(-ESCALATE_PRO)]
+names(temp)[c(1,4)] = c("DLI","CLOSE_DLI")
+temp[,DIV:='IN_25K_100K']
+temp[CLOSE_DLI<25000,DIV:='BELOW_25K']
+temp[CLOSE_DLI>100000,DIV:='ABOVE_100K']
+temp[,DIV:=factor(DIV, levels=c('BELOW_25K','IN_25K_100K','ABOVE_100K'))]
+targetstring="DIV"
+rankstring="ESCALATE_PRO"
+pseq=c((0:10)*0.01,1)
+zxc = fun_mod_ptile(temp, targetstring, rankstring, pseq, cumulative=TRUE)
+zxc[['ABOVE_25K_RATE']] = round((zxc$DIV.IN_25K_100K+zxc$DIV.ABOVE_100K)/
+                                (zxc$DIV.BELOW_25K+zxc$DIV.IN_25K_100K+zxc$DIV.ABOVE_100K), digits=4)
+zxc[['ABOVE_25K_COVER']] = round((zxc$DIV.IN_25K_100K+zxc$DIV.ABOVE_100K)/
+                                 (sum(temp$DIV=='IN_25K_100K')+sum(temp$DIV=='ABOVE_100K')), digits=4)
+
+#DT::datatable(zxc, rownames=FALSE, options=list(dom='t',pageLength=15))
+xcv = pmut_auc(as.numeric(temp$DIV!='BELOW_25K'), temp$ESCALATE_PRO)
+```
+
+As the target event is an extremely rare event with an overall rate of `r zxc$ABOVE_25K_RATE[11]`, we use AUC to measure model performance.
+AUC value of **`r xcv[[1]]`** is generated with `IN_25K_100K` and `ABOVE_100K` as 1.
+
+```{r, fig.height=4,fig.width=10,fig.align='center'}
+p1 <- xcv[[2]]
+p2 <- ggplot(reshape2::melt(zxc[,1:4,with=F], id.vars="LAB"), aes(LAB,value,fill=variable)) + 
+  geom_bar(stat='identity',position='fill') + scale_y_continuous(labels=scales::percent) +
+  theme(legend.position="top", axis.text.x=element_text(angle = 90,hjust = 1))
+grid.arrange(p1, p2, ncol=2)
+```
+
+
+
+------
+
+## Alert-A Model
+
+Note that Alert-A score is populated by ESCALATE score times one minus GOABOVE score.
+We will now evaluate the Alert-A model at week-5 (day-30), week-7 (day-45), and week-9 (day-60).
+For each week option, we filter on claim with current DLI lower than $25K, 
+rank Alert-A  scores/propensities at that week from high to low, 
+then study whether closing DLI sits between $25K and 
+$100K for each top percentile.
+
+
+### Week-5
+
+```{r}
+temp = dt[ENTER_SCORE_DIFF_WEEK==5 & DLI_BIN=='<25K',
+          .(DIRECT_LOSS_INCURRED_AMT,DLI_BIN,SCORE_A,DIRECT_LOSS_INCURRED)][order(-SCORE_A)]
+names(temp)[c(1,4)] = c("DLI","CLOSE_DLI")
+temp[,DIV:='IN_25K_100K']
+temp[CLOSE_DLI<25000,DIV:='BELOW_25K']
+temp[CLOSE_DLI>100000,DIV:='ABOVE_100K']
+temp[,DIV:=factor(DIV, levels=c('BELOW_25K','IN_25K_100K','ABOVE_100K'))]
+targetstring="DIV"
+rankstring="SCORE_A"
+pseq=c((0:10)*0.01,1)
+zxc = fun_mod_ptile(temp, targetstring, rankstring, pseq, cumulative=TRUE)
+zxc[['IN_25K_100K_RATE']] = round((zxc$DIV.IN_25K_100K)/
+                                  (zxc$DIV.BELOW_25K+zxc$DIV.IN_25K_100K+zxc$DIV.ABOVE_100K), digits=4)
+zxc[['IN_25K_100K_COVER']] = round((zxc$DIV.IN_25K_100K)/
+                                   (sum(temp$DIV=='IN_25K_100K')), digits=4)
+
+DT::datatable(zxc, rownames=FALSE, options=list(dom='t',pageLength=15))
+xcv = pmut_auc(as.numeric(temp$DIV=='IN_25K_100K'), temp$SCORE_A)
+```
+
+As the target event is an extremely rare event with an overall rate of `r zxc$IN_25K_100K_RATE[11]`, we use AUC to measure model performance.
+AUC value of **`r xcv[[1]]`** is generated with `IN_25K_100K` as 1.
+
+```{r, fig.height=4,fig.width=10,fig.align='center'}
+p1 <- xcv[[2]]
+p2 <- ggplot(zxc, aes(LAB,IN_25K_100K_RATE)) + geom_bar(stat='identity') + 
+  geom_hline(yintercept=mean(temp$DIV=='IN_25K_100K'),color='red') +
+  theme(axis.text.x=element_text(angle = 90,hjust = 1), plot.title=element_text(hjust = 0.5)) + labs(title=' ')
+grid.arrange(p1, p2, ncol=2)
+```
+
+
+### Week-7
+
+```{r}
+temp = dt[ENTER_SCORE_DIFF_WEEK==7 & DLI_BIN=='<25K',
+          .(DIRECT_LOSS_INCURRED_AMT,DLI_BIN,SCORE_A,DIRECT_LOSS_INCURRED)][order(-SCORE_A)]
+names(temp)[c(1,4)] = c("DLI","CLOSE_DLI")
+temp[,DIV:='IN_25K_100K']
+temp[CLOSE_DLI<25000,DIV:='BELOW_25K']
+temp[CLOSE_DLI>100000,DIV:='ABOVE_100K']
+temp[,DIV:=factor(DIV, levels=c('BELOW_25K','IN_25K_100K','ABOVE_100K'))]
+targetstring="DIV"
+rankstring="SCORE_A"
+pseq=c((0:10)*0.01,1)
+zxc = fun_mod_ptile(temp, targetstring, rankstring, pseq, cumulative=TRUE)
+zxc[['IN_25K_100K_RATE']] = round((zxc$DIV.IN_25K_100K)/
+                                  (zxc$DIV.BELOW_25K+zxc$DIV.IN_25K_100K+zxc$DIV.ABOVE_100K), digits=4)
+zxc[['IN_25K_100K_COVER']] = round((zxc$DIV.IN_25K_100K)/
+                                   (sum(temp$DIV=='IN_25K_100K')), digits=4)
+
+#DT::datatable(zxc, rownames=FALSE, options=list(dom='t',pageLength=15))
+xcv = pmut_auc(as.numeric(temp$DIV=='IN_25K_100K'), temp$SCORE_A)
+```
+
+As the target event is an extremely rare event with an overall rate of `r zxc$IN_25K_100K_RATE[11]`, we use AUC to measure model performance.
+AUC value of **`r xcv[[1]]`** is generated with `IN_25K_100K` as 1.
+
+```{r, fig.height=4,fig.width=10,fig.align='center'}
+p1 <- xcv[[2]]
+p2 <- ggplot(zxc, aes(LAB,IN_25K_100K_RATE)) + geom_bar(stat='identity') + 
+  geom_hline(yintercept=mean(temp$DIV=='IN_25K_100K'),color='red') +
+  theme(axis.text.x=element_text(angle = 90,hjust = 1), plot.title=element_text(hjust = 0.5)) + labs(title=' ')
+grid.arrange(p1, p2, ncol=2)
+```
+
+
+### Week-9
+
+```{r}
+temp = dt[ENTER_SCORE_DIFF_WEEK==9 & DLI_BIN=='<25K',
+          .(DIRECT_LOSS_INCURRED_AMT,DLI_BIN,SCORE_A,DIRECT_LOSS_INCURRED)][order(-SCORE_A)]
+names(temp)[c(1,4)] = c("DLI","CLOSE_DLI")
+temp[,DIV:='IN_25K_100K']
+temp[CLOSE_DLI<25000,DIV:='BELOW_25K']
+temp[CLOSE_DLI>100000,DIV:='ABOVE_100K']
+temp[,DIV:=factor(DIV, levels=c('BELOW_25K','IN_25K_100K','ABOVE_100K'))]
+targetstring="DIV"
+rankstring="SCORE_A"
+pseq=c((0:10)*0.01,1)
+zxc = fun_mod_ptile(temp, targetstring, rankstring, pseq, cumulative=TRUE)
+zxc[['IN_25K_100K_RATE']] = round((zxc$DIV.IN_25K_100K)/
+                                  (zxc$DIV.BELOW_25K+zxc$DIV.IN_25K_100K+zxc$DIV.ABOVE_100K), digits=4)
+zxc[['IN_25K_100K_COVER']] = round((zxc$DIV.IN_25K_100K)/
+                                   (sum(temp$DIV=='IN_25K_100K')), digits=4)
+
+#DT::datatable(zxc, rownames=FALSE, options=list(dom='t',pageLength=15))
+xcv = pmut_auc(as.numeric(temp$DIV=='IN_25K_100K'), temp$SCORE_A)
+```
+
+As the target event is an extremely rare event with an overall rate of `r zxc$IN_25K_100K_RATE[11]`, we use AUC to measure model performance.
+AUC value of **`r xcv[[1]]`** is generated with `IN_25K_100K` as 1.
+
+```{r, fig.height=4,fig.width=10,fig.align='center'}
+p1 <- xcv[[2]]
+p2 <- ggplot(zxc, aes(LAB,IN_25K_100K_RATE)) + geom_bar(stat='identity') + 
+  geom_hline(yintercept=mean(temp$DIV=='IN_25K_100K'),color='red') +
+  theme(axis.text.x=element_text(angle = 90,hjust = 1), plot.title=element_text(hjust = 0.5)) + labs(title=' ')
+grid.arrange(p1, p2, ncol=2)
+```
+
+
+
+------
+
+
+
