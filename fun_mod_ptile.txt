@@ -1,0 +1,50 @@
+fun_mod_ptile <- function(data, targetstring, rankstring, pseq=c(0, 0.1, 0.2, 0.3, 0.4, 0.5), cumulative=TRUE) {
+  data = data[order(-data[[rankstring]]),]
+  data$LAB = NA_character_
+  index.df = data.frame(SEQ=seq(1,length(pseq)-1), index.sta=NA, index.fin=NA)
+  
+  if (cumulative==TRUE) {
+    index.df$index.sta = 1
+    index.df$index.fin = round(pseq[-1]*dim(data)[1])
+    index.df$LAB = paste0("0 - ", pseq[-1])
+  } else {
+    index.df$index.sta = round(pseq[-length(pseq)]*dim(data)[1]) + 1
+    index.df$index.sta[1] = 1
+    index.df$index.fin = round(pseq[-1]*dim(data)[1])
+    index.df$LAB = paste0(pseq[-length(pseq)], " - ", pseq[-1])
+  }
+  
+  for (i in 1:dim(index.df)[1]) {
+    data$LAB[index.df$index.sta[i] : index.df$index.fin[i]] = index.df$LAB[i]
+    zata = data[!is.na(LAB),]
+    temp = unique(data[,get(targetstring)])[!unique(data[,get(targetstring)]) %in% unique(zata[,get(targetstring)])]
+    if (length(temp)>0) {
+    # this if part handles some percentiles do not have all elements
+      for (j in 1:length(temp)) {
+        zata = rbind(zata, data[get(targetstring)==temp[j],][1,])
+        print(i)
+        print(temp[j])
+        zata$LAB = index.df$LAB[i]
+      }
+    }
+    out.df = zata[, .N, by=.(LAB,get(targetstring))] %>% dcast(LAB ~ get, value.var='N')
+    if (length(temp)>0) {
+    # need to minus 1
+      for (j in 1:length(temp)) {
+        out.df[[as.character(temp[j])]][1] = out.df[[as.character(temp[j])]][1] - 1
+      }
+    }
+    nlvl = dim(out.df)[2]
+    names(out.df)[2:nlvl] = paste0(targetstring, ".", names(out.df)[2:nlvl])
+    #out.df[,paste0(names(out.df)[2:nlvl],"%"):= out.df[,2:nlvl]/rowSums(out.df[,2:nlvl])] 
+    if (i==1) {
+      out = out.df
+    } else {
+      out = rbind(out, out.df)
+    }
+    data$LAB = NA_character_
+  }
+  
+  #View(out)
+  return(out)
+}
