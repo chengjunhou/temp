@@ -44,11 +44,25 @@ DT::datatable(cars, rownames=FALSE, options=list(dom='pt',pageLength=15))
 
 You can also embed plots, for example:
 
-```{r pressure, echo=FALSE}
+```{r}
 plot(pressure)
 ```
 
 Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
 
+```{r}
+hc = hchart(temp, "column", hcaes(x=variable, y=value, group=CNT_TYPE)) %>% 
+  hc_plotOptions(series = list(stacking = "normal"))
+```
+
+```{r}
+n_combination = 2
+index = all.index
+vec = names(df)[index]
+up.df = expand.grid(vec, vec, stringsAsFactors=FALSE)
+up.df = up.df[!duplicated(t(apply(up.df, 1, sort))),]
+up.df = up.df[!apply(up.df, 1, function(x) all(x==x[1])), ]
+up.df$PASS_RATE_UP = rep(-1, dim(up.df)[1])
+```
 
 ------
