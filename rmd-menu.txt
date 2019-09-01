@@ -16,11 +16,6 @@ library(data.table)
 library(dplyr)
 library(ggplot2)
 library(gridExtra)
-setwd('~/wd/wct2')
-source('src/pmut_auc.R')
-source('src/fun_mod_ptile.R')
-meta <- readRDS("rds/meta")
-dt <- fread('data/wct2-dt.csv')
 ```
 
 
